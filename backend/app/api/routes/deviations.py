@@ -7,6 +7,8 @@ from app.db.session import get_db
 from app.schemas.common import Message
 from app.schemas.deviations import (
     DeviationCreate,
+    ChatRequest,
+    ChatResponse,
     DeviationOut,
     DeviationUpdate,
     ReassessRequest,
@@ -64,3 +66,7 @@ async def deviation_fields(deviation_id: str, db: AsyncSession = Depends(get_db)
 @router.post("/{deviation_id}/reassess", response_model=ReassessResponse)
 async def reassess(deviation_id: str, payload: ReassessRequest, db: AsyncSession = Depends(get_db)) -> ReassessResponse:
     return await DeviationService(db).reassess(deviation_id, payload.rationale)
+
+@router.post("/{deviation_id}/chat", response_model=ChatResponse)
+async def chat_deviation(deviation_id: str, payload: ChatRequest, db: AsyncSession = Depends(get_db)) -> ChatResponse:
+    return await DeviationService(db).process_chat(deviation_id, payload.message)

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -32,7 +32,10 @@ class Deviation(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     code: Mapped[str] = mapped_column(String(32), index=True)
+    site: Mapped[str] = mapped_column(String(255), default="")
+    occurrence_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     title: Mapped[str] = mapped_column(String(255))
+    source: Mapped[str] = mapped_column(String(64), default="Internal Deviation")
     product: Mapped[str] = mapped_column(String(100), index=True)
     batch: Mapped[str] = mapped_column(String(64), index=True)
     severity: Mapped[str] = mapped_column(String(16), index=True)
@@ -45,6 +48,7 @@ class Deviation(Base):
     duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     description: Mapped[str] = mapped_column(Text, default="")
     actions: Mapped[str] = mapped_column(Text, default="")
+    initial_impact: Mapped[str] = mapped_column(String(64), default="Potential Quality Impact")
     ai_assisted: Mapped[bool] = mapped_column(Boolean, default=True)
     analysis_confidence: Mapped[float] = mapped_column(Float, default=0.0)
     review_required: Mapped[bool] = mapped_column(Boolean, default=True)

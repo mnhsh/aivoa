@@ -26,12 +26,53 @@ import {
   setField,
   submit,
   setExtractionProgress,
+  setAnalysisResults,
 } from './store'
-import { extractDeviationData } from './utils/extractor'
-import { extractTextFromPdf } from './utils/pdfParser'
 import { deviations as mockDeviations } from './data'
+import { deviationApi } from './api/deviationApi'
+import { aiApi } from './api/aiApi'
+import type { AnalyzeResult } from './api/aiApi'
+import type { BackendDeviation, Deviation, Severity } from './types'
 
 const cx = (...items: (string | false | undefined)[]) => items.filter(Boolean).join(' ')
+
+const formFieldsFromDeviation = (deviation: BackendDeviation, rationale = ''): Record<string, string> => ({
+  site: deviation.site,
+  occurrenceDate: deviation.occurrence_date || '',
+  title: deviation.title,
+  source: deviation.source,
+  product: deviation.product,
+  batch: deviation.batch,
+  parameter: deviation.parameter,
+  approvedRange:
+    deviation.approved_min !== null && deviation.approved_max !== null
+      ? `${deviation.approved_min} - ${deviation.approved_max}`
+      : deviation.approved_max !== null
+        ? `Max ${deviation.approved_max}`
+        : deviation.approved_min !== null
+          ? `Min ${deviation.approved_min}`
+          : '',
+  actualValue: deviation.actual_value === null ? '' : String(deviation.actual_value),
+  duration: deviation.duration_minutes === null ? '' : String(deviation.duration_minutes),
+  description: deviation.description,
+  actions: deviation.actions,
+  initialImpact: deviation.initial_impact,
+  initialSeverity: deviation.severity,
+  aiSeverity: deviation.severity,
+  aiReasoning: rationale,
+})
+
+const nullableNumber = (value: string): number | null => {
+  const match = value.match(/-?\d+(?:\.\d+)?/)
+  return match ? Number(match[0]) : null
+}
+
+const approvedBounds = (value: string): { approved_min: number | null; approved_max: number | null } => {
+  const values = value.match(/-?\d+(?:\.\d+)?/g)?.map(Number) || []
+  if (/^\s*max/i.test(value)) return { approved_min: null, approved_max: values[0] ?? null }
+  if (/^\s*min/i.test(value)) return { approved_min: values[0] ?? null, approved_max: null }
+  return { approved_min: values[0] ?? null, approved_max: values[1] ?? null }
+}
 
 function Header() {
   return (
@@ -73,8 +114,17 @@ function AllDeviationsPage() {
   const navigate = useNavigate()
   const [searchTerm, setSearchTerm] = useState('')
   const [severityFilter, setSeverityFilter] = useState<string>('All')
+  const [deviationsList, setDeviationsList] = useState<Deviation[]>(mockDeviations)
 
-  const filtered = mockDeviations.filter((item) => {
+  useEffect(() => {
+    deviationApi.list().then((items) => {
+      if (items && items.length > 0) {
+        setDeviationsList(items)
+      }
+    })
+  }, [])
+
+  const filtered = deviationsList.filter((item) => {
     const matchesSearch =
       item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
       item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -183,6 +233,8 @@ function LogDeviationPage() {
 
   const [activeTab, setActiveTab] = useState<'upload' | 'chips' | 'reasoning' | 'chat'>('upload')
   const [pasteText, setPasteText] = useState('')
+  const [deviationId, setDeviationId] = useState<string | null>(null)
+  const [deviationVersion, setDeviationVersion] = useState<number | null>(null)
   const [chatInput, setChatInput] = useState('')
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null)
   const [aiResponseText, setAiResponseText] = useState<string | null>(null)
@@ -208,48 +260,40 @@ function LogDeviationPage() {
     dispatch(setField({ key, value }))
   }
 
-  const runExtraction = (rawText: string, fileName?: string) => {
-    dispatch(setExtractionProgress({ isExtracting: true, progress: 15 }))
-    let progress = 15
+  const applyAnalysisResult = async (result: AnalyzeResult, successMessage: string) => {
+    const deviation = await deviationApi.get(result.deviation_id)
+    setDeviationId(result.deviation_id)
+    setDeviationVersion(deviation.version)
+    dispatch(setExtractionProgress({ isExtracting: false, progress: 100 }))
+    dispatch(applyExtractedFields(formFieldsFromDeviation(deviation, result.rationale)))
 
-    const interval = setInterval(() => {
-      progress += 25
-      if (progress >= 100) {
-        progress = 100
-        clearInterval(interval)
-        dispatch(setExtractionProgress({ isExtracting: false, progress: 100 }))
+    const confScores: Record<string, number> = {}
+    result.extracted_fields.forEach((field) => {
+      if (field.label === 'Batch Number') confScores.batch = field.confidence
+      if (field.label === 'Product') confScores.product = field.confidence
+      if (field.label === 'Parameter') confScores.parameter = field.confidence
+      if (field.label === 'Actual Value') confScores.actualValue = field.confidence
+      if (field.label === 'Duration') confScores.duration = field.confidence
+    })
+    confScores.initialSeverity = 95
+    dispatch(setConfidenceScores(confScores))
+    setAiResponseText(successMessage)
+  }
 
-        const result = extractDeviationData(rawText)
-        const stringFields: Record<string, string> = {
-          site: result.site,
-          occurrenceDate: result.occurrenceDate,
-          title: result.title,
-          source: result.source,
-          product: result.product,
-          batch: result.batch,
-          description: result.description,
-          initialImpact: result.initialImpact,
-          initialSeverity: result.initialSeverity,
-          aiReasoning: result.aiReasoning,
-        }
-        dispatch(applyExtractedFields(stringFields))
-        dispatch(setConfidenceScores(result.confidenceScores))
-
-        const count = Object.keys(stringFields).filter((k) => Boolean(stringFields[k])).length
-        const msg = fileName
-          ? `Parsed PDF document "${fileName}". Extracted ${count} field(s) & generated severity reasoning!`
-          : `Extracted ${count} field(s) from provided details. Form & severity reasoning updated live!`
-
-        setAiResponseText(msg)
-        setChatMessages((prev) => [
-          ...prev,
-          { role: 'assistant', text: msg },
-        ])
-        setActiveTab('reasoning')
+  const runExtraction = async (rawText: string, _fileName?: string) => {
+    dispatch(setExtractionProgress({ isExtracting: true, progress: 30 }))
+    try {
+      const result = await aiApi.analyzeText(rawText)
+      if (result) {
+        await applyAnalysisResult(result, 'Text analyzed & deviation created in backend.')
       } else {
-        dispatch(setExtractionProgress({ isExtracting: true, progress }))
+        dispatch(setExtractionProgress({ isExtracting: false, progress: 0 }))
+        setAiResponseText('Error: analyzeText returned null (Network or CORS error).')
       }
-    }, 180)
+    } catch (e) {
+      dispatch(setExtractionProgress({ isExtracting: false, progress: 0 }))
+      setAiResponseText(e instanceof Error ? e.message : 'Unable to analyze the pasted content.')
+    }
   }
 
   const handleSampleLoad = () => {
@@ -270,15 +314,19 @@ Description: During API-ACM-01 batch B240918 processing in Unit-1, reactor tempe
   const handleFileDrop = async (file?: File) => {
     if (!file) return
     setSelectedFileName(file.name)
-
-    let content = ''
-    if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
-      content = await extractTextFromPdf(file)
-    } else {
-      content = await file.text()
+    dispatch(setExtractionProgress({ isExtracting: true, progress: 30 }))
+    try {
+      const result = await aiApi.uploadDocument(file)
+      if (result) {
+        await applyAnalysisResult(result, 'Fields extracted & deviation created in backend.')
+      } else {
+        dispatch(setExtractionProgress({ isExtracting: false, progress: 0 }))
+        setAiResponseText('Error: uploadDocument returned null (Network or CORS error).')
+      }
+    } catch (e) {
+      dispatch(setExtractionProgress({ isExtracting: false, progress: 0 }))
+      setAiResponseText(e instanceof Error ? e.message : 'Unable to analyze the uploaded document.')
     }
-
-    runExtraction(content, file.name)
   }
 
   const handlePasteExtract = () => {
@@ -286,40 +334,58 @@ Description: During API-ACM-01 batch B240918 processing in Unit-1, reactor tempe
     runExtraction(pasteText)
   }
 
-  const handleChatSend = () => {
-    if (!chatInput.trim()) return
+  const handleChatSend = async () => {
+    if (!chatInput.trim() || !deviationId) return
     const msg = chatInput.trim()
     setChatInput('')
 
     setChatMessages((prev) => [...prev, { role: 'user', text: msg }])
 
-    const lower = msg.toLowerCase()
-    const matchVal = msg.match(/(?:to|as|is|=)\s+(.+)$/i)
-    const val = matchVal?.[1]?.replace(/[.!]+$/, '').trim()
+    try {
+      const result = await aiApi.chat(deviationId, msg)
+      setDeviationVersion(result.deviation.version)
 
-    let reply = ''
-    if (val && (lower.includes('batch') || lower.includes('lot'))) {
-      dispatch(setField({ key: 'batch', value: val }))
-      reply = `Updated Batch / Lot Number to "${val}".`
-    } else if (val && (lower.includes('product') || lower.includes('material'))) {
-      dispatch(setField({ key: 'product', value: val }))
-      reply = `Updated Product / Material to "${val}".`
-    } else if (val && (lower.includes('site') || lower.includes('plant'))) {
-      dispatch(setField({ key: 'site', value: val }))
-      reply = `Updated Site / Plant to "${val}".`
-    } else if (val && (lower.includes('title') || lower.includes('description'))) {
-      dispatch(setField({ key: 'title', value: val }))
-      reply = `Updated Title / Short Description to "${val}".`
-    } else {
-      runExtraction(msg)
-      return
+      if (result.updated_fields.length > 0) {
+        const allFields = formFieldsFromDeviation(result.deviation, result.rationale || form.aiReasoning)
+        const fieldMap: Record<string, string> = {
+          site: 'site',
+          occurrence_date: 'occurrenceDate',
+          title: 'title',
+          source: 'source',
+          product: 'product',
+          batch: 'batch',
+          parameter: 'parameter',
+          approved_min: 'approvedRange',
+          approved_max: 'approvedRange',
+          actual_value: 'actualValue',
+          duration_minutes: 'duration',
+          description: 'description',
+          actions: 'actions',
+          initial_impact: 'initialImpact',
+          severity: 'initialSeverity',
+        }
+        const changedFields: Record<string, string> = {}
+        result.updated_fields.forEach((backendField) => {
+          const formField = fieldMap[backendField]
+          if (formField) changedFields[formField] = allFields[formField]
+        })
+        if (result.updated_fields.includes('severity')) {
+          changedFields.aiSeverity = result.deviation.severity
+        }
+        if (result.rationale) changedFields.aiReasoning = result.rationale
+        dispatch(applyExtractedFields(changedFields))
+      }
+      setChatMessages((prev) => [...prev, { role: 'assistant', text: result.message }])
+    } catch (error) {
+      const text = error instanceof Error ? error.message : 'Unknown server error'
+      setChatMessages((prev) => [...prev, { role: 'assistant', text: `I could not update the form: ${text}` }])
     }
-
-    setChatMessages((prev) => [...prev, { role: 'assistant', text: reply }])
   }
 
   const handleReset = () => {
     dispatch(resetForm())
+    setDeviationId(null)
+    setDeviationVersion(null)
     setSelectedFileName(null)
     setPasteText('')
     setAiResponseText(null)
@@ -327,11 +393,39 @@ Description: During API-ACM-01 batch B240918 processing in Unit-1, reactor tempe
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  const handleSave = () => {
-    dispatch(submit())
-    setTimeout(() => {
-      navigate('/deviations')
-    }, 1200)
+  const handleSave = async () => {
+    const bounds = approvedBounds(form.approvedRange)
+    const payload = {
+      site: form.site,
+      occurrence_date: form.occurrenceDate || null,
+      title: form.title || 'Process Parameter Excursion',
+      source: form.source,
+      product: form.product,
+      batch: form.batch,
+      severity: form.initialSeverity as Severity,
+      status: 'Under Review' as const,
+      parameter: form.parameter,
+      ...bounds,
+      actual_value: nullableNumber(form.actualValue),
+      duration_minutes: nullableNumber(form.duration),
+      description: form.description,
+      actions: form.actions,
+      initial_impact: form.initialImpact,
+    }
+
+    try {
+      const saved = deviationId && deviationVersion !== null
+        ? await deviationApi.update(deviationId, { ...payload, expected_version: deviationVersion })
+        : await deviationApi.create(payload)
+      setDeviationId(saved.id)
+      setDeviationVersion(saved.version)
+      dispatch(applyExtractedFields(formFieldsFromDeviation(saved, form.aiReasoning)))
+      dispatch(submit())
+      setTimeout(() => navigate('/deviations'), 1200)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown server error'
+      setAiResponseText(`Save failed: ${message}`)
+    }
   }
 
   const isHighlighted = (fieldName: string) => highlightedFields.includes(fieldName)
@@ -636,8 +730,8 @@ Description: During API-ACM-01 batch B240918 processing in Unit-1, reactor tempe
                   <div className="reasoning-badges-row">
                     <div className="reasoning-badge-group">
                       <span>Assessed Severity</span>
-                      <span className={cx('badge-severity-pill', (form.initialSeverity || 'High').toLowerCase())}>
-                        {form.initialSeverity || 'High'}
+                      <span className={cx('badge-severity-pill', (form.aiSeverity || 'High').toLowerCase())}>
+                        {form.aiSeverity || 'High'}
                       </span>
                     </div>
                     <div className="reasoning-badge-group">
@@ -651,8 +745,7 @@ Description: During API-ACM-01 batch B240918 processing in Unit-1, reactor tempe
                   <div className="reasoning-body">
                     <h5>AI Justification & Rationale</h5>
                     <p>
-                      {form.aiReasoning ||
-                        'Assessed as High severity with Potential Quality Impact. The process parameter exceeded approved limits for an extended period, requiring QA investigation per SOP-DEV-004.'}
+                      {form.aiReasoning || 'AI rationale not available.'}
                     </p>
                   </div>
 

@@ -11,6 +11,7 @@ class AnalyzeRequest(BaseModel):
 class AnalyzeResponse(BaseModel):
     deviation_id: str
     recommendation: Severity
+    rationale: str
     extracted_fields: list[ExtractedField]
     evidence: list[EvidenceOut]
     similar_cases: list[dict]

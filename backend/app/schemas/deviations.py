@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -7,6 +7,8 @@ from app.schemas.common import AuditEventOut
 
 Severity = Literal["Low", "Medium", "High", "Critical"]
 Status = Literal["Draft", "Under Review", "Investigation", "Closed"]
+Source = Literal["Internal Deviation", "Customer Complaint", "Audit Observation", "Vendor Deviation"]
+Impact = Literal["Minor Impact", "Potential Quality Impact", "Major Product Impact", "Critical Safety Risk"]
 
 
 class EvidenceOut(BaseModel):
@@ -28,19 +30,23 @@ class ExtractedField(BaseModel):
 
 
 class DeviationBase(BaseModel):
+    site: str = Field(default="", max_length=255)
+    occurrence_date: date | None = None
     title: str = Field(min_length=3, max_length=255)
+    source: Source = "Internal Deviation"
     product: str = Field(min_length=1, max_length=100)
     batch: str = Field(min_length=1, max_length=64)
     severity: Severity
     status: Status = "Draft"
-    owner: str = "AIVOA AI"
-    parameter: str
+    owner: str = Field(default="AIVOA AI", max_length=120)
+    parameter: str = Field(max_length=120)
     approved_min: float | None = None
     approved_max: float | None = None
     actual_value: float | None = None
     duration_minutes: int | None = None
     description: str = ""
     actions: str = ""
+    initial_impact: Impact = "Potential Quality Impact"
     review_required: bool = True
     review_notes: str | None = None
 
@@ -58,10 +64,23 @@ class DeviationCreate(DeviationBase):
 
 
 class DeviationUpdate(BaseModel):
-    title: str | None = None
+    site: str | None = Field(default=None, max_length=255)
+    occurrence_date: date | None = None
+    title: str | None = Field(default=None, min_length=3, max_length=255)
+    source: Source | None = None
+    product: str | None = Field(default=None, min_length=1, max_length=100)
+    batch: str | None = Field(default=None, min_length=1, max_length=64)
     severity: Severity | None = None
     status: Status | None = None
-    owner: str | None = None
+    owner: str | None = Field(default=None, max_length=120)
+    parameter: str | None = Field(default=None, max_length=120)
+    approved_min: float | None = None
+    approved_max: float | None = None
+    actual_value: float | None = None
+    duration_minutes: int | None = None
+    description: str | None = None
+    actions: str | None = None
+    initial_impact: Impact | None = None
     review_required: bool | None = None
     review_notes: str | None = None
     expected_version: int
@@ -99,3 +118,14 @@ class ReassessResponse(BaseModel):
     recommended_severity: Severity
     provider: str
     demo_mode: bool
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class ChatResponse(BaseModel):
+    deviation: DeviationOut
+    updated_fields: list[str]
+    message: str
+    rationale: str | None = None

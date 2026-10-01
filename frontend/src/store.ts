@@ -17,6 +17,7 @@ const initialForm = {
   actions: '',
   initialImpact: 'Potential Quality Impact',
   initialSeverity: 'High',
+  aiSeverity: 'High',
   aiReasoning: '',
 }
 
@@ -47,8 +48,14 @@ const deviationSlice = createSlice({
       if (fields.product !== undefined) { state.form.product = fields.product; updatedKeys.push('product') }
       if (fields.batch !== undefined) { state.form.batch = fields.batch; updatedKeys.push('batch') }
       if (fields.description !== undefined) { state.form.description = fields.description; updatedKeys.push('description') }
+      if (fields.parameter !== undefined) { state.form.parameter = fields.parameter; updatedKeys.push('parameter') }
+      if (fields.approvedRange !== undefined) { state.form.approvedRange = fields.approvedRange; updatedKeys.push('approvedRange') }
+      if (fields.actualValue !== undefined) { state.form.actualValue = fields.actualValue; updatedKeys.push('actualValue') }
+      if (fields.duration !== undefined) { state.form.duration = fields.duration; updatedKeys.push('duration') }
+      if (fields.actions !== undefined) { state.form.actions = fields.actions; updatedKeys.push('actions') }
       if (fields.initialImpact !== undefined) { state.form.initialImpact = fields.initialImpact; updatedKeys.push('initialImpact') }
       if (fields.initialSeverity !== undefined) { state.form.initialSeverity = fields.initialSeverity; updatedKeys.push('initialSeverity') }
+      if (fields.aiSeverity !== undefined) { state.form.aiSeverity = fields.aiSeverity; updatedKeys.push('aiSeverity') }
       if (fields.aiReasoning !== undefined) { state.form.aiReasoning = fields.aiReasoning; updatedKeys.push('aiReasoning') }
 
       state.applied = true

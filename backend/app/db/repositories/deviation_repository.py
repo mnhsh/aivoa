@@ -35,7 +35,11 @@ class DeviationRepository:
 
     async def create(self, deviation: Deviation) -> Deviation:
         self.db.add(deviation)
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
         await self.db.refresh(deviation)
         return deviation
 
@@ -46,13 +50,21 @@ class DeviationRepository:
     async def update_with_version(self, deviation: Deviation, expected_version: int, updates: dict) -> tuple[Deviation, bool]:
         if deviation.version != expected_version:
             deviation.conflict_flag = True
-            await self.db.commit()
+            try:
+                await self.db.commit()
+            except Exception:
+                await self.db.rollback()
+                raise
             await self.db.refresh(deviation)
             return deviation, False
         for key, value in updates.items():
             setattr(deviation, key, value)
         deviation.version += 1
         deviation.updated_at = datetime.utcnow()
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
         await self.db.refresh(deviation)
         return deviation, True
